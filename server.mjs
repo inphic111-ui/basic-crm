@@ -2,6 +2,9 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import http from 'http';
+import crypto from 'crypto';
+import fetch from 'node-fetch';
+import cookieParser from 'cookie-parser';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -9,9 +12,18 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Google OAuth 配置
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '414739834037-pvorc3htj1ftb2qli8u58vs07k900ioq.apps.googleusercontent.com';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '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';
+const REDIRECT_URI = process.env.REDIRECT_URI || (process.env.NODE_ENV === 'production' ? 'https://basic-crm-offline.up.railway.app/api/auth/google/callback' : 'http://localhost:3000/api/auth/google/callback');
+
 // 中間件
 app.use(express.json());
+app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'client/dist')));
+
+// 簡單的內存會話存儲（生產環境應使用數據庫）
+const sessions = new Map();
 
 // API 路由
 app.get('/api/health', (req, res) => {
@@ -32,6 +44,137 @@ let customers = [
 ];
 
 let nextId = 6;
+
+// 用戶數據（內存存儲）
+const users = new Map();
+
+// Google OAuth 登錄路由
+app.get('/api/auth/google/login', (req, res) => {
+  const state = crypto.randomBytes(32).toString('hex');
+  const scope = 'openid profile email';
+  
+  // 存儲 state 用於驗證
+  sessions.set(state, { createdAt: Date.now() });
+  
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+    `client_id=${GOOGLE_CLIENT_ID}&` +
+    `redirect_uri=${encodeURIComponent(REDIRECT_URI)}&` +
+    `response_type=code&` +
+    `scope=${encodeURIComponent(scope)}&` +
+    `state=${state}`;
+  
+  res.redirect(authUrl);
+});
+
+// Google OAuth 回調路由
+app.get('/api/auth/google/callback', async (req, res) => {
+  const { code, state } = req.query;
+  
+  if (!code || !state) {
+    return res.status(400).json({ error: '缺少授權碼或狀態' });
+  }
+  
+  // 驗證 state
+  if (!sessions.has(state)) {
+    return res.status(400).json({ error: '無效的狀態參數' });
+  }
+  
+  sessions.delete(state);
+  
+  try {
+    // 交換授權碼以獲取 token
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        code,
+        grant_type: 'authorization_code',
+        redirect_uri: REDIRECT_URI
+      })
+    });
+    
+    const tokenData = await tokenResponse.json();
+    
+    if (!tokenData.access_token) {
+      return res.status(400).json({ error: '無法獲取訪問令牌' });
+    }
+    
+    // 獲取用戶信息
+    const userResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { 'Authorization': `Bearer ${tokenData.access_token}` }
+    });
+    
+    const userData = await userResponse.json();
+    
+    if (!userData.id) {
+      return res.status(400).json({ error: '無法獲取用戶信息' });
+    }
+    
+    // 創建或更新用戶
+    let user = users.get(userData.id);
+    if (!user) {
+      user = {
+        id: userData.id,
+        email: userData.email,
+        name: userData.name,
+        picture: userData.picture,
+        createdAt: new Date()
+      };
+      users.set(userData.id, user);
+    } else {
+      user.email = userData.email;
+      user.name = userData.name;
+      user.picture = userData.picture;
+    }
+    
+    // 創建會話
+    const sessionId = crypto.randomBytes(32).toString('hex');
+    sessions.set(sessionId, {
+      userId: userData.id,
+      user,
+      createdAt: Date.now()
+    });
+    
+    // 設置 cookie 並重定向到儀表板
+    res.cookie('sessionId', sessionId, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 天
+    });
+    
+    res.redirect('/');
+  } catch (error) {
+    console.error('Google OAuth 錯誤:', error);
+    res.status(500).json({ error: '認證失敗' });
+  }
+});
+
+// 獲取當前用戶
+app.get('/api/auth/me', (req, res) => {
+  const sessionId = req.cookies?.sessionId;
+  
+  if (!sessionId || !sessions.has(sessionId)) {
+    return res.json({ user: null });
+  }
+  
+  const session = sessions.get(sessionId);
+  res.json({ user: session.user });
+});
+
+// 登出
+app.post('/api/auth/logout', (req, res) => {
+  const sessionId = req.cookies?.sessionId;
+  
+  if (sessionId) {
+    sessions.delete(sessionId);
+  }
+  
+  res.clearCookie('sessionId');
+  res.json({ success: true });
+});
 
 // 客戶 API
 app.get('/api/customers', (req, res) => {
@@ -136,6 +279,7 @@ process.on('unhandledRejection', (reason, promise) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[Server] ✓ Running on http://0.0.0.0:${PORT}`);
   console.log(`[Server] ✓ API available at http://0.0.0.0:${PORT}/api/health`);
+  console.log(`[Server] ✓ Google OAuth configured`);
   console.log(`[Server] ✓ Process ID: ${process.pid}`);
 });
 
