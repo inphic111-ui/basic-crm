@@ -13,8 +13,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Google OAuth 配置
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '414739834037-pvorc3htj1ftb2qli8u58vs07k900ioq.apps.googleusercontent.com';
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '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';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+
+if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+  console.error('[Error] Google OAuth credentials not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.');
+  process.exit(1);
+}
 const REDIRECT_URI = process.env.REDIRECT_URI || (process.env.NODE_ENV === 'production' ? 'https://basic-crm-offline.up.railway.app/api/auth/google/callback' : 'http://localhost:3000/api/auth/google/callback');
 
 // 中間件
