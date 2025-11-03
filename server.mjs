@@ -25,15 +25,26 @@ if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
 const REDIRECT_URI = process.env.REDIRECT_URI || (process.env.NODE_ENV === 'production' ? 'https://basic-crm-offline.up.railway.app/api/auth/google/callback' : 'http://localhost:3000/api/auth/google/callback');
 
 // PostgreSQL 連接池
+if (!process.env.DATABASE_URL) {
+  console.error('[Error] DATABASE_URL environment variable is not set!');
+  process.exit(1);
+}
+
+console.log('[Database] Connecting to:', process.env.DATABASE_URL.replace(/:[^:]*@/, ':****@'));
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
 });
 
 // 初始化數據庫
 async function initializeDatabase() {
   try {
+    console.log('[Database] Attempting to connect...');
     const client = await pool.connect();
+    console.log('[Database] ✓ Connected successfully');
     
     // 創建 users 表
     await client.query(`
@@ -83,9 +94,10 @@ async function initializeDatabase() {
     }
     
     client.release();
-    console.log('[Database] ✓ Connected and initialized');
+    console.log('[Database] ✓ Tables created and initialized');
   } catch (error) {
-    console.error('[Database Error]', error);
+    console.error('[Database Error]', error.message);
+    console.error('[Database Error Details]', error);
     process.exit(1);
   }
 }
