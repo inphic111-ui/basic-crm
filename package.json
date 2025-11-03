@@ -4,6 +4,7 @@
   "description": "現代簡潔的客戶關係管理系統",
   "type": "module",
   "scripts": {
+    "start": "node server.mjs",
     "dev": "NODE_ENV=development tsx watch server/_core/index.ts",
     "build": "vite build && tsc --noEmit",
     "preview": "vite preview",
